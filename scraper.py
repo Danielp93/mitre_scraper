@@ -2,10 +2,11 @@
 
 import json
 import re
-from urllib.request import urlopen, Request
+import asyncio
+import aiohttp
 
-def gather_tactics(tactic):
-    links = get_links('tactics', f'https://attack.mitre.org/tactics/{ tactic }')
+async def gather_tactics(session, tactic):
+    links = await get_links(session, 'tactics', f'https://attack.mitre.org/tactics/{ tactic }')
     tactics = { x:
             {
                 "name": y.strip(),
@@ -13,10 +14,11 @@ def gather_tactics(tactic):
             } for (x, y) in links }
     return tactics
 
-def gather_techniques(tactics):
+#TO-DO: Add techniques to tactics
+async def gather_techniques(session, tactics):
     techs = {}
     for _, data in tactics.items():
-        links = get_links('techniques', data['url'])
+        links = await get_links(session, 'techniques', data['url'])
         techs.update({ x: 
               { 
                   "id": x,
@@ -27,26 +29,43 @@ def gather_techniques(tactics):
 
     #second loop after all techniques are filled in 
     for _, data in tactics.items():
-        links = get_links('subtechniques', data['url'])
+        links = await get_links(session, 'subtechniques', data['url'])
         for (x, y, z) in links:
             techs[x]['subtechniques'][y] = {
                     "id": f'{ x }.{ y }',
                     "subtechnique": z.strip(), 
-                    "url": f'https://attack.mitre.com/technique/{ x }/{ y }'
+                    "url": f'https://attack.mitre.org/techniques/{ x }/{ y }'
                     }
     return techs
 
-def gather_sources(techniques):
-   pass   
+async def gather_sources(session, techniques):
+    for _, data in techniques.items():
+        data['sources'] = await get_sources(session, data)
+        for _, subdata in data['subtechniques'].items():
+           print(await get_sources(session, subdata))
 
-
-def get_links(linktype, url):
-    with urlopen(url) as res:
-        data = res.read().decode('utf-8')
+async def get_links(session, linktype, url):
+    async with session.get(url) as res:
+        content = await res.text()
+        
     if linktype == 'subtechniques':
-        return re.findall(f'<a href="/techniques/([A-Z0-9]+)/([0-9]+)">([a-zA-Z\s\-]+)</a>', data)
-    return re.findall(f'<a href="/{ linktype }/([A-Z0-9]+)">([a-zA-Z\s/-]+)</a>', data)
+        return re.findall(f'<a href="/techniques/([A-Z0-9]+)/([0-9]+)">([a-zA-Z\s\-]+)</a>', content)
+    return re.findall(f'<a href="/{ linktype }/([A-Z0-9]+)">([a-zA-Z\s/-]+)</a>', content)
+
+async def get_sources(session, technique):
+    async with session.get(technique['url']) as res:
+        content = await res.text()
+    re_match = re.search('<span class="h5 card-title">Data Sources:&nbsp;</span>([A-Za-z,\-/\s]+)</div>', content)
+    if re_match:
+        technique.update({'sources': [ x.strip() for x in re_match.group(1).split(',') ]})
+    return technique
+
+async def main():
+    async with aiohttp.ClientSession() as session:
+        tactics = await gather_tactics(session, 'enterprise')
+        data = await gather_techniques(session, tactics)
+        print(await gather_sources(session, data))
+
 
 if __name__ == '__main__':
-    data = gather_techniques(gather_tactics('enterprise'))
-    print(json.dumps(data, indent=4))
+    asyncio.run(main())
